@@ -9,12 +9,13 @@ elasticmate [flags]
 
 Flags:
   -url string    Elasticsearch URL (default "http://localhost:9200")
+  -file string   Optional path to text file for version management
 ```
 
 ## Features
 
 - Automatic version generation based on migration content
-- Tracks migrations in a dedicated Elasticsearch index (`.elasticmate_migrations`)
+- Tracks migrations in a dedicated Elasticsearch index (`.elasticmate_migrations`) or optionally in a text file
 - Automatically runs migrations in version order
 - Skips already applied migrations
 - Stores migration history with timestamps and function names
@@ -83,6 +84,26 @@ This means:
 - Consistent versions across different runs
 - Easy to track in version control
 
+## Using Text File for Version Management
+
+If you prefer not to create an additional Elasticsearch index for tracking migrations, you can use a text file instead:
+
+```bash
+# Run migrations using a text file to track versions
+elasticmate -file ./migrations.json
+```
+
+The file will be created automatically if it doesn't exist. It stores migration versions in a simple JSON format:
+
+```json
+{
+  "abcd1234": true,
+  "efgh5678": true
+}
+```
+
+This is particularly useful for development environments or when you want to keep migration tracking separate from Elasticsearch.
+
 ## Development and Testing
 
 ### Prerequisites
@@ -120,6 +141,3 @@ The test suite uses:
 - Automated test setup and teardown
 - Isolated test indices
 - Comprehensive test cases for all major features
-
-
-

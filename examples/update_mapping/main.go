@@ -82,7 +82,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	mm := migration.NewMigrationManager(client)
+	mm := migration.NewMigrationManager(client, "")
 
 	mm.Register(migration.NewMigration(
 		"Create articles index",

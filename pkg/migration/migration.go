@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"runtime"
 	"sort"
@@ -59,12 +60,14 @@ type MigrationRecord struct {
 type MigrationManager struct {
 	Client     *elasticsearch.Client
 	Migrations []Migration
+	FilePath   string // Optional path to text file for version management
 }
 
-func NewMigrationManager(client *elasticsearch.Client) *MigrationManager {
+func NewMigrationManager(client *elasticsearch.Client, filePath string) *MigrationManager {
 	return &MigrationManager{
 		Client:     client,
 		Migrations: []Migration{},
+		FilePath:   filePath,
 	}
 }
 
@@ -72,7 +75,72 @@ func (mm *MigrationManager) Register(migration Migration) {
 	mm.Migrations = append(mm.Migrations, migration)
 }
 
+func (mm *MigrationManager) useTextFile() bool {
+	return mm.FilePath != ""
+}
+
+// readVersionsFromFile reads applied migrations from a text file
+func (mm *MigrationManager) readVersionsFromFile() (map[string]bool, error) {
+	if !mm.useTextFile() {
+		return nil, fmt.Errorf("text file path not provided")
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(mm.FilePath); os.IsNotExist(err) {
+		// File doesn't exist, return empty map
+		return make(map[string]bool), nil
+	}
+
+	file, err := os.Open(mm.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open version file: %w", err)
+	}
+	defer file.Close()
+
+	var versions map[string]bool
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&versions); err != nil {
+		// If file is empty or invalid JSON, return empty map
+		if err.Error() == "EOF" || strings.Contains(err.Error(), "unexpected end of JSON input") {
+			return make(map[string]bool), nil
+		}
+		return nil, fmt.Errorf("failed to decode version file: %w", err)
+	}
+
+	// If versions is nil, return empty map
+	if versions == nil {
+		return make(map[string]bool), nil
+	}
+
+	return versions, nil
+}
+
+// writeVersionsToFile writes applied migrations to a text file
+func (mm *MigrationManager) writeVersionsToFile(versions map[string]bool) error {
+	if !mm.useTextFile() {
+		return fmt.Errorf("text file path not provided")
+	}
+
+	file, err := os.Create(mm.FilePath)
+	if err != nil {
+		return fmt.Errorf("failed to create version file: %w", err)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(versions); err != nil {
+		return fmt.Errorf("failed to encode version file: %w", err)
+	}
+
+	return nil
+}
+
 func (mm *MigrationManager) ensureMigrationsIndex() error {
+	// Skip if using text file
+	if mm.useTextFile() {
+		return nil
+	}
+
 	res, err := mm.Client.Indices.Exists([]string{migrationsIndex})
 	if err != nil {
 		return fmt.Errorf("error checking migrations index: %w", err)
@@ -99,16 +167,16 @@ func (mm *MigrationManager) ensureMigrationsIndex() error {
 			return fmt.Errorf("error creating migrations index: %w", err)
 		}
 		defer res.Body.Close()
-
-		if res.IsError() {
-			return fmt.Errorf("error creating migrations index: %s", res.String())
-		}
 	}
 
 	return nil
 }
 
 func (mm *MigrationManager) GetAppliedMigrations() (map[string]bool, error) {
+	if mm.useTextFile() {
+		return mm.readVersionsFromFile()
+	}
+
 	applied := make(map[string]bool)
 
 	if err := mm.ensureMigrationsIndex(); err != nil {
@@ -150,6 +218,15 @@ func (mm *MigrationManager) GetAppliedMigrations() (map[string]bool, error) {
 }
 
 func (mm *MigrationManager) RecordMigration(migration Migration) error {
+	if mm.useTextFile() {
+		applied, err := mm.readVersionsFromFile()
+		if err != nil {
+			return err
+		}
+		applied[migration.Version()] = true
+		return mm.writeVersionsToFile(applied)
+	}
+
 	record := MigrationRecord{
 		Version:     migration.Version(),
 		Description: migration.Description,

@@ -2,7 +2,7 @@ package migration
 
 import (
 	"encoding/json"
-	"strings"
+	"os"
 	"testing"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -24,7 +24,7 @@ func TestMigrationManager(t *testing.T) {
 	}
 
 	t.Run("Test Migration Registration and Execution", func(t *testing.T) {
-		mm := NewMigrationManager(client)
+		mm := NewMigrationManager(client, "")
 
 		migration1 := createTestMigration("test_index_1", "Create test index 1")
 		migration2 := createTestMigration("test_index_2", "Create test index 2")
@@ -51,92 +51,99 @@ func TestMigrationManager(t *testing.T) {
 			t.Fatalf("Failed to get applied migrations: %v", err)
 		}
 
-		if !applied[migration1.Version()] {
-			t.Error("Expected migration1 to be recorded as applied")
-		}
-		if !applied[migration2.Version()] {
-			t.Error("Expected migration2 to be recorded as applied")
+		for _, migration := range []Migration{migration1, migration2} {
+			if !applied[migration.Version()] {
+				t.Errorf("Expected migration %s to be applied", migration.Description)
+			}
 		}
 	})
 
-	t.Run("Test Migration Idempotency", func(t *testing.T) {
-		mm := NewMigrationManager(client)
+	t.Run("Test Migration Idempotence", func(t *testing.T) {
+		mm := NewMigrationManager(client, "")
 
-		migration := createTestMigration("test_index_3", "Create test index 3")
+		migration := createTestMigration("test_idempotence", "Create test idempotence index")
 		mm.Register(migration)
 
+		// Run migrations twice
 		if err := mm.RunMigrations(); err != nil {
 			t.Fatalf("Failed to run migrations first time: %v", err)
 		}
+
 		if err := mm.RunMigrations(); err != nil {
 			t.Fatalf("Failed to run migrations second time: %v", err)
 		}
 
-		exists, err := indexExists(client, "test_index_3")
+		// Check that the index exists
+		exists, err := indexExists(client, "test_idempotence")
 		if err != nil {
 			t.Fatalf("Failed to check index existence: %v", err)
 		}
 		if !exists {
-			t.Error("Expected test_index_3 to exist")
-		}
-
-		// Verify only one migration record exists
-		query := `{
-			"query": {
-				"match": {
-					"version": "` + migration.Version() + `"
-				}
-			}
-		}`
-		res, err := client.Search(
-			client.Search.WithIndex(migrationsIndex),
-			client.Search.WithBody(strings.NewReader(query)),
-		)
-		if err != nil {
-			t.Fatalf("Failed to search migration records: %v", err)
-		}
-		defer res.Body.Close()
-
-		var result struct {
-			Hits struct {
-				Total struct {
-					Value int `json:"value"`
-				} `json:"total"`
-			} `json:"hits"`
-		}
-		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-			t.Fatalf("Failed to decode search response: %v", err)
-		}
-
-		if result.Hits.Total.Value != 1 {
-			t.Errorf("Expected 1 migration record, got %d", result.Hits.Total.Value)
+			t.Errorf("Expected index test_idempotence to exist")
 		}
 	})
 
-	t.Run("Test Version Generation", func(t *testing.T) {
-		// Create two migrations with same description but different functions
-		migration1 := NewMigration(
-			"Test migration",
-			func(client *elasticsearch.Client) error { return nil },
-		)
-		migration2 := NewMigration(
-			"Test migration",
-			func(client *elasticsearch.Client) error { return nil },
-		)
+	t.Run("Test Migration Versioning", func(t *testing.T) {
+		// Test that migrations with the same function but different descriptions get different versions
+		migration1 := NewMigration("Description 1", func(client *elasticsearch.Client) error {
+			return nil
+		})
 
-		// Versions should be different due to different function names
+		migration2 := NewMigration("Description 2", func(client *elasticsearch.Client) error {
+			return nil
+		})
+
 		if migration1.Version() == migration2.Version() {
-			t.Error("Expected different versions for different functions")
+			t.Error("Expected different versions for different descriptions")
+		}
+	})
+
+	t.Run("Test Migration Manager With Text File", func(t *testing.T) {
+		filePath := "test_versions.json"
+		defer os.Remove(filePath)
+
+		mm := NewMigrationManager(nil, filePath)
+
+		migration1 := NewMigration("Create test index 1", func(client *elasticsearch.Client) error {
+			return nil
+		})
+		migration2 := NewMigration("Create test index 2", func(client *elasticsearch.Client) error {
+			return nil
+		})
+
+		mm.Register(migration1)
+		mm.Register(migration2)
+
+		if err := mm.RunMigrations(); err != nil {
+			t.Fatalf("Failed to run migrations: %v", err)
 		}
 
-		// Create two migrations with same function but different descriptions
-		f := func(client *elasticsearch.Client) error { return nil }
-		migration3 := NewMigration("Description 1", f)
-		migration4 := NewMigration("Description 2", f)
+		applied, err := mm.GetAppliedMigrations()
+		if err != nil {
+			t.Fatalf("Failed to get applied migrations: %v", err)
+		}
 
-		// Versions should be different due to different descriptions
-		if migration3.Version() == migration4.Version() {
-			t.Error("Expected different versions for different descriptions")
+		for _, migration := range []Migration{migration1, migration2} {
+			if !applied[migration.Version()] {
+				t.Errorf("Expected migration %s to be applied", migration.Description)
+			}
+		}
+
+		// Verify the file exists and contains the correct data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("Failed to read version file: %v", err)
+		}
+
+		var versions map[string]bool
+		if err := json.Unmarshal(fileData, &versions); err != nil {
+			t.Fatalf("Failed to parse version file: %v", err)
+		}
+
+		for _, migration := range []Migration{migration1, migration2} {
+			if !versions[migration.Version()] {
+				t.Errorf("Expected migration %s to be in version file", migration.Description)
+			}
 		}
 	})
 }

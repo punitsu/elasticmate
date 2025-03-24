@@ -31,6 +31,7 @@ func createUsersIndex(client *elasticsearch.Client) error {
 
 func main() {
 	esURL := flag.String("url", "http://localhost:9200", "Elasticsearch URL")
+	filePath := flag.String("file", "", "Optional path to text file for version management")
 	flag.Parse()
 
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
@@ -40,7 +41,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	mm := migration.NewMigrationManager(client)
+	mm := migration.NewMigrationManager(client, *filePath)
 	mm.Register(migration.NewMigration(
 		"Create users index",
 		createUsersIndex,
